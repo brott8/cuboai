@@ -4,9 +4,34 @@
 // Assistant's own core UI shell (home-assistant-main, ha-panel-config,
 // ha-init-page, …). It raced HA's frontend bootstrap and blocked those core
 // registrations as "duplicates", producing an intermittent blank white screen
-// that needed many refreshes to load (issue #86). Our own two elements are
-// each guarded individually with customElements.get() at their define() sites
-// below, which is all that is needed.
+// that needed many refreshes to load (issue #86). Only register our own
+// elements, never intercept registrations made by other components.
+
+// HA's scoped registry polyfill can replace the registry after this module
+// loads (frontend #52960). Recheck our own definitions after HA starts and
+// once more in case the readiness signal arrived before the registry swap.
+function defineCuboaiElement(name, elementClass) {
+  const initialRegistry = window.customElements;
+  if (!initialRegistry.get(name)) {
+    initialRegistry.define(name, elementClass);
+  }
+
+  const checkCurrentRegistry = () => {
+    try {
+      const registry = window.customElements;
+      if (registry.get(name)) return;
+      registry.define(name, elementClass);
+      console.info(`CuboAI: registered ${name} after frontend initialization`);
+    } catch (error) {
+      console.error(`CuboAI: failed to register ${name}`, error);
+    }
+  };
+
+  initialRegistry.whenDefined('home-assistant')
+    .then(checkCurrentRegistry)
+    .catch(error => console.error(`CuboAI: frontend readiness check failed for ${name}`, error));
+  setTimeout(checkCurrentRegistry, 5000);
+}
 
 // Find the CuboAI camera entity by the device_id ATTRIBUTE that camera.py
 // publishes — never by entity-id string surgery.
@@ -1331,9 +1356,7 @@ class CuboAICameraCardEditor extends HTMLElement {
   }
 }
 
-if (!customElements.get('cuboai-camera-card-editor')) {
-  customElements.define("cuboai-camera-card-editor", CuboAICameraCardEditor);
-}
+defineCuboaiElement('cuboai-camera-card-editor', CuboAICameraCardEditor);
 
 
 class CuboAICameraCard extends HTMLElement {
@@ -4424,9 +4447,7 @@ class CuboAICameraCard extends HTMLElement {
   }
 }
 
-if (!customElements.get('cuboai-camera-card')) {
-  customElements.define('cuboai-camera-card', CuboAICameraCard);
-}
+defineCuboaiElement('cuboai-camera-card', CuboAICameraCard);
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some(c => c.type === 'cuboai-camera-card')) {
@@ -5038,9 +5059,7 @@ class CuboAITimelineCard extends HTMLElement {
   }
 }
 
-if (!customElements.get("cuboai-timeline-card")) {
-  customElements.define("cuboai-timeline-card", CuboAITimelineCard);
-}
+defineCuboaiElement('cuboai-timeline-card', CuboAITimelineCard);
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((c) => c.type === "cuboai-timeline-card")) {

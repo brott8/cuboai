@@ -21,7 +21,8 @@ _HARNESS = """
 const fs = require('fs');
 globalThis.HTMLElement = class {};
 globalThis.window = globalThis;
-globalThis.customElements = { get: () => undefined, define: () => {}, whenDefined: () => new Promise(() => {}) };
+const definitions = new Map();
+globalThis.customElements = { get: (name) => definitions.get(name), define: (name, cls) => definitions.set(name, cls), whenDefined: () => new Promise(() => {}) };
 globalThis.document = { createElement: () => ({ style: {} }) };
 // The grace period is 10 s; run timers by hand instead of waiting.
 let timers = [];
@@ -30,6 +31,8 @@ globalThis.clearTimeout = (id) => { if (timers[id - 1]) timers[id - 1].fn = null
 const fire = () => { const due = timers; timers = []; due.forEach((t) => t.fn && t.fn()); };
 new Function(fs.readFileSync(process.argv[2], 'utf8') +
   ';globalThis.__w = cuboaiWatchForPlayer; globalThis.__a = cuboaiPlayerArrived; globalThis.__ms = CUBOAI_PLAYER_WAIT_MS;')();
+// Registry recovery timers are unrelated to the player grace-period checks.
+timers = [];
 
 function makeCard() {
   const card = { children: [] };
