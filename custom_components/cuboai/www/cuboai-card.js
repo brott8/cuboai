@@ -8,29 +8,61 @@
 // elements, never intercept registrations made by other components.
 
 // HA's scoped registry polyfill can replace the registry after this module
-// loads (frontend #52960). Recheck our own definitions after HA starts and
-// once more in case the readiness signal arrived before the registry swap.
-function defineCuboaiElement(name, elementClass) {
-  const initialRegistry = window.customElements;
-  if (!initialRegistry.get(name)) {
-    initialRegistry.define(name, elementClass);
-  }
+// loads (frontend #52960). Recheck our own definitions as HA starts and for a
+// short bounded window afterward. Some registries also reject constructors
+// already registered natively, so retry with a fresh subclass if necessary.
+const CUBOAI_DEFINE_RECHECK_MS = [500, 2000, 5000, 15000];
 
-  const checkCurrentRegistry = () => {
+function defineCuboaiElement(name, elementClass) {
+  const ensureRegistered = (initial = false) => {
+    const registry = window.customElements;
+    if (!registry) return;
+
     try {
-      const registry = window.customElements;
       if (registry.get(name)) return;
-      registry.define(name, elementClass);
-      console.info(`CuboAI: registered ${name} after frontend initialization`);
     } catch (error) {
-      console.error(`CuboAI: failed to register ${name}`, error);
+      console.error(`CuboAI: failed to inspect registration for ${name}`, error);
+      if (initial) throw error;
+      return;
+    }
+
+    try {
+      registry.define(name, elementClass);
+      if (!initial) console.info(`CuboAI: registered ${name} after frontend initialization`);
+      return;
+    } catch (originalError) {
+      console.warn(`CuboAI: could not register ${name} with its original constructor; trying a subclass`, originalError);
+      try {
+        registry.define(name, class extends elementClass {});
+        console.info(`CuboAI: registered ${name} using a fallback subclass`);
+      } catch (fallbackError) {
+        let alreadyRegistered = false;
+        try {
+          alreadyRegistered = Boolean(registry.get(name));
+        } catch (inspectionError) {
+          console.error(`CuboAI: failed to inspect registration for ${name}`, inspectionError);
+        }
+        if (!alreadyRegistered) {
+          console.error(`CuboAI: failed to register ${name}`, originalError, fallbackError);
+          if (initial) throw fallbackError;
+        }
+      }
     }
   };
 
-  initialRegistry.whenDefined('home-assistant')
-    .then(checkCurrentRegistry)
-    .catch(error => console.error(`CuboAI: frontend readiness check failed for ${name}`, error));
-  setTimeout(checkCurrentRegistry, 5000);
+  ensureRegistered(true);
+
+  try {
+    window.customElements.whenDefined('home-assistant')
+      .then(() => ensureRegistered())
+      .catch(error => console.error(`CuboAI: frontend readiness check failed for ${name}`, error));
+  } catch (error) {
+    console.error(`CuboAI: frontend readiness check unavailable for ${name}`, error);
+  }
+
+  CUBOAI_DEFINE_RECHECK_MS.forEach((delay) => {
+    setTimeout(() => ensureRegistered(), delay);
+  });
 }
 
 // Find the CuboAI camera entity by the device_id ATTRIBUTE that camera.py

@@ -7,10 +7,12 @@ const scenario = process.argv[3];
 const names = ['cuboai-camera-card-editor', 'cuboai-camera-card', 'cuboai-timeline-card'];
 
 class Registry {
-  constructor() {
+  constructor({ rejectUsedConstructors = false, usedConstructors = new Set() } = {}) {
     this.entries = new Map();
     this.attempts = [];
     this.failures = new Map();
+    this.rejectUsedConstructors = rejectUsedConstructors;
+    this.usedConstructors = usedConstructors;
     this.ready = new Promise((resolve, reject) => { this.resolve = resolve; this.reject = reject; });
   }
   get(name) { return this.entries.get(name); }
@@ -18,7 +20,9 @@ class Registry {
     this.attempts.push([name, cls]);
     if (this.failures.has(name)) throw this.failures.get(name);
     if (this.entries.has(name) || [...this.entries.values()].includes(cls)) throw new Error('duplicate definition');
+    if (this.rejectUsedConstructors && this.usedConstructors.has(cls)) throw new Error('constructor already used');
     this.entries.set(name, cls);
+    this.usedConstructors.add(cls);
   }
   whenDefined(name) {
     assert.equal(name, 'home-assistant');
@@ -29,13 +33,17 @@ class Registry {
 function environment() {
   let now = 0;
   const timers = [];
-  const logs = { info: [], error: [] };
+  const logs = { info: [], warn: [], error: [] };
   const registry = new Registry();
   const unrelated = class OtherElement {};
   registry.define('other-element', unrelated);
   const sandbox = {
     HTMLElement: class {}, customElements: registry,
-    console: { info: (...args) => logs.info.push(args), error: (...args) => logs.error.push(args) },
+    console: {
+      info: (...args) => logs.info.push(args),
+      warn: (...args) => logs.warn.push(args),
+      error: (...args) => logs.error.push(args),
+    },
     setTimeout: (fn, delay) => { timers.push({ fn, at: now + delay }); return timers.length; },
   };
   sandbox.window = sandbox;
@@ -67,6 +75,9 @@ function environment() {
 const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 const assertEntries = (registry, constructors) => names.forEach((name, i) => assert.equal(registry.get(name), constructors[i], name));
 const assertLogged = (records, name, error) => assert(records.some(args => args[0].includes(name) && (!error || args.includes(error))), `missing log for ${name}`);
+const assertSubclassEntries = (registry, constructors) => names.forEach((name, i) => {
+  assert.equal(Object.getPrototypeOf(registry.get(name)), constructors[i], name);
+});
 
 async function run() {
   const e = environment();
@@ -81,7 +92,7 @@ async function run() {
     assert.equal(e.registry.get('another-element'), another);
     e.metadata();
     e.registry.resolve(); await flush();
-    e.advance(5000);
+    e.advance(15000);
     assertEntries(e.registry, classes);
     assert.equal(e.registry.attempts.length, 5);
     assert.equal(e.logs.error.length, 0);
@@ -99,7 +110,7 @@ async function run() {
     assert.equal(next.define, nextDefine);
     assert.equal(e.registry.define, initialDefine);
     const attempts = next.attempts.length;
-    e.advance(5000);
+    e.advance(15000);
     assert.equal(next.attempts.length, attempts);
     e.metadata();
   } else if (scenario === 'second_swap_after_recovery') {
@@ -116,12 +127,34 @@ async function run() {
     const classes = e.load();
     if (scenario === 'ready_before_swap') { e.registry.resolve(); await flush(); }
     const next = new Registry(); e.sandbox.customElements = next;
-    e.advance(4999);
+    e.advance(499);
     names.forEach(name => assert.equal(next.get(name), undefined));
     e.advance(1);
     assertEntries(next, classes);
     names.forEach(name => assertLogged(e.logs.info, name));
     e.metadata();
+  } else if (scenario === 'late_swap_before_last_recheck') {
+    const classes = e.load();
+    e.registry.resolve(); await flush();
+    e.advance(6000);
+    const next = new Registry(); e.sandbox.customElements = next;
+    e.advance(8999);
+    names.forEach(name => assert.equal(next.get(name), undefined));
+    e.advance(1);
+    assertEntries(next, classes);
+    names.forEach(name => assertLogged(e.logs.info, name));
+  } else if (scenario === 'constructor_fallback') {
+    const classes = e.load();
+    const next = new Registry({ rejectUsedConstructors: true, usedConstructors: new Set(classes) });
+    e.sandbox.customElements = next;
+    e.registry.resolve(); await flush();
+    assertSubclassEntries(next, classes);
+    names.forEach(name => {
+      assertLogged(e.logs.warn, name);
+      assert(e.logs.warn.some(args => args[0].includes(name) && args[1].message === 'constructor already used'));
+      assertLogged(e.logs.info, name);
+    });
+    assert.equal(e.logs.error.length, 0);
   } else if (scenario === 'existing' || scenario === 'partial') {
     const old = names.map(() => class Existing {});
     const count = scenario === 'existing' ? names.length : 2;
@@ -135,7 +168,7 @@ async function run() {
     e.sandbox.customElements = next;
     e.registry.resolve(); await flush();
     assertEntries(next, [classes[0], old[1], classes[2]]);
-    e.advance(5000);
+    e.advance(15000);
     assert.equal(e.sandbox.customCards[0], metadata);
     assert.equal(e.sandbox.customCards[1].type, 'other-card');
     e.metadata();
@@ -152,7 +185,7 @@ async function run() {
     assertEntries(next, first);
     next.resolve(); await flush();
     const attempts = next.attempts.length;
-    e.advance(5000);
+    e.advance(15000);
     assert.equal(next.attempts.length, attempts);
     assertEntries(next, first);
     e.metadata();
@@ -164,12 +197,12 @@ async function run() {
     e.registry.resolve(); await flush();
     assertEntries(next, second);
     next.resolve(); await flush();
-    e.advance(5000);
+    e.advance(15000);
     assertEntries(e.registry, first);
     assertEntries(next, second);
     e.metadata();
   } else if (scenario === 'too_late') {
-    e.load(); e.registry.resolve(); await flush(); e.advance(5000);
+    e.load(); e.registry.resolve(); await flush(); e.advance(15000);
     const next = new Registry(); e.sandbox.customElements = next;
     e.advance(60000); await flush();
     names.forEach(name => assert.equal(next.get(name), undefined));

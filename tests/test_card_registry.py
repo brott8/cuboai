@@ -20,6 +20,8 @@ NAMES = ("cuboai-camera-card-editor", "cuboai-camera-card", "cuboai-timeline-car
         "ready_after_swap",
         "second_swap_after_recovery",
         "ready_before_swap",
+        "late_swap_before_last_recheck",
+        "constructor_fallback",
         "no_readiness",
         "existing",
         "partial",
